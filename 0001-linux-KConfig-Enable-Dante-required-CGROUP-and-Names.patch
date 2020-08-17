@@ -1,0 +1,39 @@
+From d3243a3eaa9a97aa703d6bc01f94c15c3c5f00f4 Mon Sep 17 00:00:00 2001
+From: Rex Chang <rchang@ti.com>
+Date: Wed, 8 Jul 2020 08:53:10 -0400
+Subject: [PATCH] linux: KConfig: Enable Dante required CGROUP and Namespace
+ features
+
+Enable CGROUP and Namespace in RT-Linux as required by Audinate DEP
+
+Signed-off-by: Rex Chang <rchang@ti.com>
+---
+ arch/arm/configs/tisdk_k2g-evm-rt_defconfig | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/configs/tisdk_k2g-evm-rt_defconfig b/arch/arm/configs/tisdk_k2g-evm-rt_defconfig
+index b526fa1..ec6c489 100644
+--- a/arch/arm/configs/tisdk_k2g-evm-rt_defconfig
++++ b/arch/arm/configs/tisdk_k2g-evm-rt_defconfig
+@@ -132,7 +132,8 @@ CONFIG_CFS_BANDWIDTH=y
+ CONFIG_CGROUP_PIDS=y
+ # CONFIG_CGROUP_RDMA is not set
+ CONFIG_CGROUP_FREEZER=y
+-# CONFIG_CPUSETS is not set
++CONFIG_CPUSETS=y
++CONFIG_PROC_PID_CPUSET=y
+ CONFIG_CGROUP_DEVICE=y
+ CONFIG_CGROUP_CPUACCT=y
+ CONFIG_CGROUP_PERF=y
+@@ -141,7 +142,7 @@ CONFIG_SOCK_CGROUP_DATA=y
+ CONFIG_NAMESPACES=y
+ CONFIG_UTS_NS=y
+ CONFIG_IPC_NS=y
+-# CONFIG_USER_NS is not set
++CONFIG_USER_NS=y
+ CONFIG_PID_NS=y
+ CONFIG_NET_NS=y
+ CONFIG_CHECKPOINT_RESTORE=y
+-- 
+1.9.1
+

@@ -1,0 +1,30 @@
+The dante enablement project demostrates the pro audio Dante software
+running on TI ARM Cortex-A15 platformsa in loopback mode.
+
+There are 2 types of loopback in the demo:
+
+   1) ARM-only loopback: In this loopback type, audio samples received from
+      network will loopback in ARM GPU and out to netowrk.
+   2) DSP loopback: In DSP loopback, the audi samples will be offloaded to
+      DSP and loopback in DSP back to ARM GPU, then out to network
+
+There are 2 patch files provided:
+
+1) 0001-linux-KConfig-Enable-Dante-required-CGROUP-and-Names.patch
+
+   Dante Enabled Platform (DEP) container requires RT-Linux and 
+   CGROUP and Namespace support. Hence, this patch file reflects the
+   needed features in RT-Linux kernel.
+   RT-Linux kernel needs to rebuilt after the patch file is applied.
+
+2) dante-loopback-dsp.patch
+
+   This patch file is only needed if doing DSP loopback. This patch
+   enables the offload of audio samples to DSP, and back to ARM GPU.
+   The offload of audio samples allows further processing of audio
+   samples in DSP core.
+
+   This patch file should be applied to DEP package in dep/example/audio.
+~                                                                                   
+~                                                                                   
+

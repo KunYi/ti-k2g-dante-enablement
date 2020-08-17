@@ -1,0 +1,714 @@
+--- /dev/null
++++ /home/root/dep/example-dsp/audio/Makefile.opcl
+@@ -0,0 +1,6 @@
++all:
++	$(MAKE) -C lib -f Makefile.opcl
++	$(MAKE) -C loopback -f Makefile.opcl
++clean:
++	$(MAKE) -C lib clean -f Makefile.opcl
++	$(MAKE) -C loopback clean -f Makefile.opcl
+--- /dev/null
++++ /home/root/dep/example-dsp/audio/lib/Makefile.opcl
+@@ -0,0 +1,52 @@
++CXX ?= g++
++
++# path #
++SRC_PATH = src
++BUILD_PATH = build
++
++# executable # 
++LIB_NAME = libdep_audio.a
++
++# extensions #
++SRC_EXT = cpp
++
++SOURCES = $(shell find $(SRC_PATH) -name '*.$(SRC_EXT)' | sort -k 1nr | cut -f2-)
++OBJECTS = $(SOURCES:$(SRC_PATH)/%.$(SRC_EXT)=$(BUILD_PATH)/%.o)
++DEPS = $(OBJECTS:.o=.d)
++
++# flags #
++COMPILE_FLAGS = -Wno-error=nonnull -fPIC -Wall -Werror -Wno-error=unknown-pragmas -Wno-error=unused-function -Wno-error=strict-aliasing -fno-aggressive-loop-optimizations  -O2 -g -DNDEBUG -fPIC   -std=gnu++11
++INCLUDES = -I include
++
++.PHONY: default_target
++default_target: release
++
++.PHONY: release
++release: export CXXFLAGS := $(CXXFLAGS) $(COMPILE_FLAGS) -lOpenCL -locl_util -DOPENCL_OFFLOAD
++release: dirs
++	@$(MAKE) all
++
++.PHONY: dirs
++dirs:
++	@echo "Creating directories"
++	@mkdir -p $(dir $(OBJECTS))
++
++.PHONY: clean
++clean:
++	@$(RM) -r $(BUILD_PATH)
++	@$(RM) -r $(LIB_NAME)
++
++# checks the executable and symlinks to the output
++.PHONY: all
++all: $(LIB_NAME)
++
++# Creation of the executable
++$(LIB_NAME): $(OBJECTS)
++	ar -r $(LIB_NAME) $(OBJECTS)
++
++# Source file rules
++# After the first compilation they will be joined with the rules from the
++# dependency files to provide header dependencies
++$(BUILD_PATH)/%.o: $(SRC_PATH)/%.$(SRC_EXT)
++	@echo "Compiling: $< -> $@"
++	$(CXX) $(CXXFLAGS) $(INCLUDES) -MP -MMD -c $< -o $@
+--- /home/root/dep/example/audio/lib/include/dante/Buffers.hpp
++++ /home/root/dep/example-dsp/audio/lib/include/dante/Buffers.hpp
+@@ -93,6 +93,11 @@
+ 
+ 	void * get() const;
+ 
++#ifdef OPENCL_OFFLOAD
++        void * get_cmemTxData() const;
++        void * get_cmemRxData() const;
++#endif
++
+ 	static std::string getErrorMessage(int err);
+ 
+ private:
+@@ -130,6 +135,14 @@
+ 	// Get a pointer to the start of the audio buffer for the given Dante RX channel 
+ 	void * getDanteRxChannel(unsigned int index) const;
+ 
++#ifdef OPENCL_OFFLOAD
++        // Get a pointer to the start of the audio buffer for the given Dante TX channel
++        void * getDanteTxChannel_cmem(void) const;                             
++                                                                                        
++        // Get a pointer to the start of the audio buffer for the given Dante RX channel
++        void * getDanteRxChannel_cmem(void) const;                             
++#endif
++
+ private:
+ 	bool mGlobalNamespace;
+ 	SharedMemory mSharedMemory;
+@@ -141,6 +154,10 @@
+ 	const timing_object_subheader_t * mTimingObjectSubheader;
+ 	std::vector<void *> mDanteTxChannels;
+ 	std::vector<void *> mDanteRxChannels;
++#ifdef OPENCL_OFFLOAD
++        void * mDanteTxChannels_cmem;
++        void * mDanteRxChannels_cmem;
++#endif
+ };
+ 
+ 
+--- /home/root/dep/example/audio/lib/src/DanteBuffers.cpp
++++ /home/root/dep/example-dsp/audio/lib/src/DanteBuffers.cpp
+@@ -1,5 +1,10 @@
+ #include "dante/Buffers.hpp"
+ 
++#ifdef OPENCL_OFFLOAD
++#include <iostream>
++#include "ocl_util.h"
++#endif
++
+ #ifndef _WIN32
+ #include <errno.h>
+ #endif
+@@ -7,7 +12,11 @@
+ namespace Dante
+ {
+ 
+-Buffers::Buffers() : mGlobalNamespace(), mSharedMemory(), mDanteTxSharedMemory(), mDanteRxSharedMemory(), mHeader(), mTimingObjectSubheader(), mDanteTxChannels(), mDanteRxChannels()
++Buffers::Buffers() : mGlobalNamespace(), mSharedMemory(), mDanteTxSharedMemory(), mDanteRxSharedMemory(), mHeader(),
++		     mTimingObjectSubheader(), mDanteTxChannels(), mDanteRxChannels()
++#ifdef OPENCL_OFFLOAD
++		     , mDanteTxChannels_cmem(), mDanteRxChannels_cmem()
++#endif
+ {
+ 
+ }
+@@ -30,6 +39,7 @@
+ #endif
+ 	}
+ 	mGlobalNamespace = globalNamespace;
++
+ 	int result = mSharedMemory.connect(name, false);
+ 	if (result)
+ 	{
+@@ -37,15 +47,26 @@
+ 		return result;
+ 	}
+ 	uint8_t * buf8 = (uint8_t *) mSharedMemory.get();
++
+ 	mHeader = (const buffer_header_t *) mSharedMemory.get();
++
++#ifdef OPENCL_OFFLOAD
++        std::cerr << "Buffer::mData/buf8 " << "(" << ((void*)buf8) << ")" << std::endl;
++        std::cerr << "Buffer1::mHeader " << "(" << mSharedMemory.get() << ")" << std::endl;
++        std::cerr << "Buffer2::cmemTxData " << "(" << mSharedMemory.get_cmemTxData() << ")" << std::endl;
++        std::cerr << "Buffer2::cmemRxData " << "(" << mSharedMemory.get_cmemRxData() << ")" << std::endl;
++#endif
++
+ 	if (mHeader->metadata.timing_object_subheader_offset_bytes)
+ 	{
+ 		mTimingObjectSubheader = (timing_object_subheader_t *) (buf8 + mHeader->metadata.timing_object_subheader_offset_bytes);
+ 	}
++
+ 	mDanteTxChannels.resize(mHeader->audio.num_tx_channels);
+ 	mDanteRxChannels.resize(mHeader->audio.num_rx_channels);
+ 	uint8_t * tx0 = nullptr;
+ 	uint8_t * rx0 = nullptr;
++
+ 	if (mHeader->metadata.flags & DANTE_BUFFERS_FLAG__SEPARATE_CHANNEL_MEMORY)
+ 	{
+ 		result = mDanteTxSharedMemory.connect(name + "Tx", false);
+@@ -62,20 +83,34 @@
+ 		}
+ 		tx0 = ((uint8_t *) mDanteTxSharedMemory.get()) + mHeader->metadata.first_tx_channel_offset_bytes;
+ 		rx0 = ((uint8_t *) mDanteRxSharedMemory.get()) + mHeader->metadata.first_rx_channel_offset_bytes;
++#ifdef OPENCL_OFFLOAD
++		// To do list - need separate cmem area for separate channel memory
++#endif
+ 	}
+ 	else
+ 	{
+ 		tx0 = buf8 + mHeader->metadata.first_tx_channel_offset_bytes;
+ 		rx0 = buf8 + mHeader->metadata.first_rx_channel_offset_bytes;
+ 	}
++
+ 	for (unsigned int c = 0; c < mHeader->audio.num_tx_channels; c++)
+ 	{
+ 		mDanteTxChannels[c] = (void *) (tx0 + c * mHeader->audio.bytes_per_channel);
+ 	}
++
++#ifdef OPENCL_OFFLOAD
++	mDanteTxChannels_cmem =  mSharedMemory.get_cmemTxData();
++#endif
++
+ 	for (unsigned int c = 0; c < mHeader->audio.num_rx_channels; c++)
+ 	{
+ 		mDanteRxChannels[c] = (void *) (rx0 + c * mHeader->audio.bytes_per_channel);
+ 	}
++
++#ifdef OPENCL_OFFLOAD
++	mDanteRxChannels_cmem =  mSharedMemory.get_cmemRxData();
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -114,11 +149,25 @@
+ 	return mDanteTxChannels[index];
+ }
+ 
+-// Get a pointer to the start of the audio buffer for the given RX channel 
++// Get a pointer to the start of the audio buffer for the given RX channel
+ void * Buffers::getDanteRxChannel(unsigned int index) const
+ {
+ 	return mDanteRxChannels[index];
+ }
++
++#ifdef OPENCL_OFFLOAD
++// Get a pointer to the start of the audio buffer for the given TX channel
++void * Buffers::getDanteTxChannel_cmem(void) const
++{
++        return (mSharedMemory.get_cmemTxData());
++}
++
++// Get a pointer to the start of the audio buffer for the given RX channel
++void * Buffers::getDanteRxChannel_cmem(void) const
++{
++        return (mSharedMemory.get_cmemRxData());
++}
++#endif
+ 
+ };
+ 
+--- /home/root/dep/example/audio/lib/src/DanteRunner.cpp
++++ /home/root/dep/example-dsp/audio/lib/src/DanteRunner.cpp
+@@ -46,9 +46,21 @@
+ 
+ 	bool resetNeeded = true;	
+ 
++#ifdef OPENCL_OFFLOAD
++        std::cerr << "In Runner .. mHeader " << mHeader << std::endl;
++        std::cerr << "In Runner .. time obj " << mTimingObjectSubheader << std::endl;
++#endif
++
+ 	mResetCount = mHeader->time.reset_count;
+ 	mPeriodCount = mHeader->time.period_count;
+ 
++#ifdef OPENCL_OFFLOAD
++        std::cerr << "In Runner .. time cnt " << mHeader->time.reset_count << std::endl;
++        std::cerr << "In Runner .. magic " << mHeader->metadata.magic_marker << std::endl;
++        std::cerr << "In Runner .. rst cnt " << mResetCount << std::endl;
++        std::cerr << "In Runner .. period cnt " << mPeriodCount << std::endl;
++#endif
++
+ 	while (running && mHeader->metadata.magic_marker)
+ 	{
+ 		if (mResetCount != mHeader->time.reset_count || resetNeeded)
+@@ -60,6 +72,10 @@
+ 			}
+ 			mResetCount = mHeader->time.reset_count;
+ 			mPeriodCount = mHeader->time.period_count;
++#ifdef OPENCL_OFFLOAD
++                        std::cerr << "calling Reset" << std::endl;
++#endif
++
+ 			if (epochResetFn) epochResetFn();
+ 			continue;
+ 		}
+--- /home/root/dep/example/audio/lib/src/DanteSharedMemory.cpp
++++ /home/root/dep/example-dsp/audio/lib/src/DanteSharedMemory.cpp
+@@ -7,7 +7,11 @@
+ 
+ #include <iostream>
+ 
++#ifdef OPENCL_OFFLOAD
++#include "CL/cl.hpp"
++#endif
+ 
++
+ namespace Dante
+ {
+ 
+@@ -18,7 +22,11 @@
+ class SharedMemory::Impl
+ {
+ public:
+-	Impl() : mName(), mFileDesc(), mSize(), mData() {}
++	Impl() : mName(), mFileDesc(), mSize(), mData()
++#ifdef OPENCL_OFFLOAD
++		, cmemTxData(), cmemRxData()
++#endif
++		 {}
+ 	~Impl() { disconnect(); }
+ 
+ 	int connect(const std::string & name, bool globalNamespace)
+@@ -50,6 +58,7 @@
+ 			disconnect();
+ 			return err;
+ 		}
++
+ 		if (s.st_size == 0)
+ 		{
+ 			// Creator has not yet resized the memory, try again later
+@@ -60,6 +69,8 @@
+ 
+ 		// Map the memory
+ 		void * raw = mmap(NULL, mSize, (PROT_READ | PROT_WRITE), MAP_SHARED, mFileDesc, 0);
++
++
+ 		if (raw == MAP_FAILED)
+ 		{
+ 			// Creator has not yet resized, try again later
+@@ -69,11 +80,36 @@
+ 		}
+ 		mData = raw;
+ 
++#ifdef OPENCL_OFFLOAD
++                uint32_t cmem_size = (16 * 1024 * 4 * ((const buffer_header_t *)mData)->audio.num_rx_channels);
++		//uint32_t cmem_size = (mSize - 
++		//	(((const buffer_header_t *)mData)->metadata.first_tx_channel_offset_bytes)) / 2;
++
++		cmemTxData = (void *) __malloc_ddr(cmem_size);
++                cmemRxData = (void *) __malloc_ddr(cmem_size);
++
++                std::cerr << "CMEM alloc:  " << "(" << cmemTxData << ") "
++					     << "(" << cmemRxData << ") "
++					     << "(" << (cmem_size)  << ")" << std::endl;
++#endif
+ 		return 0;
+ 	}
+ 
+ 	void disconnect()
+ 	{
++
++#ifdef OPENCL_OFFLOAD
++		if (cmemTxData)
++		{
++			__free_ddr(cmemTxData);
++			cmemTxData = NULL;
++		}
++                if (cmemRxData)
++                {
++                        __free_ddr(cmemRxData);
++                        cmemRxData = NULL;
++                }
++#endif
+ 		if (mData)
+ 		{
+ 			if (mSize) 
+@@ -99,11 +135,20 @@
+ 
+ 	void * get() const { return mData; }
+ 
++#ifdef OPENCL_OFFLOAD                   
++        void * get_cmemTxData() const { return cmemTxData; }
++        void * get_cmemRxData() const { return cmemRxData; }
++#endif
++
+ private:
+ 	std::string mName;
+ 	int mFileDesc;
+ 	size_t mSize;
+ 	void * mData;
++#ifdef OPENCL_OFFLOAD
++	void * cmemTxData;
++        void * cmemRxData;
++#endif
+ };
+ 
+ SharedMemory::SharedMemory() 
+@@ -130,6 +175,17 @@
+ {
+ 	return mImpl->get();
+ }
++
++#ifdef OPENCL_OFFLOAD
++void * SharedMemory::get_cmemTxData() const
++{
++        return mImpl->get_cmemTxData();
++}
++void * SharedMemory::get_cmemRxData() const
++{
++        return mImpl->get_cmemRxData();
++}
++#endif
+ 
+ std::string SharedMemory::getErrorMessage(int err)
+ {
+--- /home/root/dep/example/audio/loopback/DanteLoopback.cpp
++++ /home/root/dep/example-dsp/audio/loopback/DanteLoopback.cpp
+@@ -13,6 +13,16 @@
+ #include <sys/sdt.h>
+ #endif
+ 
++#ifdef OPENCL_OFFLOAD
++#define __CL_ENABLE_EXCEPTIONS
++#include <cstdlib>
++#include <utility>
++#include <fstream>
++#include "ocl_util.h"
++#include <CL/cl.hpp>
++#include "DspKernel.dsp_h"
++#endif
++
+ static bool g_running = true;
+ 
+ static void signal_handler(int sig)
+@@ -25,28 +35,112 @@
+ class Loopback
+ {
+ public:
+-	Loopback(Dante::Buffers & buffers, int txLatencySamples) 
++	Loopback(Dante::Buffers & buffers, int txLatencySamples)
+ 		: mBuffers(buffers), mTxLatencySamples(txLatencySamples), mSamplesPerPeriod(), mSamplesPerChannel(),
+ 		  mDanteTxHeadSamples(), mDanteRxHeadSamples(), mDanteTxChannels(), mDanteRxChannels(), mNumLoopbackChannels()
+ 	{}
+ 	~Loopback() {}
+ 
+-	// Unrolled RX and TX
+-	void workUnwrappedDanteRxDanteTx(unsigned int numSamples)
++#ifdef OPENCL_OFFLOAD
++	void ocl_init(void)
+ 	{
+-		assert(mDanteTxHeadSamples + numSamples <= mSamplesPerChannel);
+-		assert(mDanteRxHeadSamples + numSamples <= mSamplesPerChannel);
+-		//std::cerr << "Transferring " << numSamples << " from " << mReadHead << " to " << mWriteHead << std::endl;
+-		unsigned int numBytes = numSamples * sizeof(int32_t);
+-		for (unsigned int c = 0; c < mNumLoopbackChannels; c++)
+-		{
+-			// We copy Dante RX -> Dante RX
+-			memcpy(mDanteTxChannels[c] + mDanteTxHeadSamples, mDanteRxChannels[c] + mDanteRxHeadSamples, numBytes);
+-		}
+-		mDanteTxHeadSamples += numSamples;
+-		mDanteRxHeadSamples += numSamples;
++		uint64_t t0, t1;
++		cText = cl::Context(CL_DEVICE_TYPE_ACCELERATOR);
++		devices = cText.getInfo<CL_CONTEXT_DEVICES>();
++		cQue = cl::CommandQueue(cText, devices[0]);
++		dspBinary = cl::Program::Binaries(1, std::make_pair(DspKernel_dsp_bin,
++                                             sizeof(DspKernel_dsp_bin)));
++
++		Prog = cl::Program(cText, devices, dspBinary);
++		Prog.build(devices);
++
++	        std::cerr << "OpenCL Dummy call...." << std::endl;
++                kTemp = cl::Kernel(Prog, "null");
++                cl::KernelFunctor null = kTemp.bind(cQue, cl::NDRange(1), cl::NDRange(1));
++
++                t0 = Dante::getMonotonicValue();				
++                null().wait();
++                t1 = Dante::getMonotonicValue();
++
++		std::cerr << "OpenCL Dummy call Elapsed (with load) " << (t1-t0)  << std::endl;
++		
++		Knl = cl::Kernel(Prog, "ocl_cmemcpy");
+ 	}
++#endif
+ 
++        // Unrolled RX and TX
++#ifdef OPENCL_OFFLOAD
++        void workUnwrappedDanteRxDanteTx(unsigned int numSamples)
++        {
++
++                try
++                {
++        	        assert(mDanteTxHeadSamples + numSamples <= mSamplesPerChannel);
++	                assert(mDanteRxHeadSamples + numSamples <= mSamplesPerChannel);
++        	        unsigned int numBytes = numSamples * sizeof(int32_t);
++
++                        if (numBytes == 0)
++                        {
++                                return;
++                        }
++
++                	for (unsigned int c = 0; c < mNumLoopbackChannels; c++)
++	                {
++	                        // Copy Dante Rx -> CMEM Rx
++                                memcpy((void*)(((uint8_t*)get_cmem_rx()) + (numBytes * c)),
++                                         ((void *)(mDanteRxChannels[c] + mDanteRxHeadSamples)), numBytes);
++			}
++
++			cl::Buffer bufA(cText, CL_MEM_WRITE_ONLY|CL_MEM_USE_HOST_PTR,
++				(unsigned int) (mNumLoopbackChannels * numBytes),
++				(void *) mDanteTxChannels_cmem);
++			cl::Buffer bufB(cText, CL_MEM_READ_ONLY|CL_MEM_USE_HOST_PTR,
++				(unsigned int) (mNumLoopbackChannels * numBytes),
++				(void *) mDanteRxChannels_cmem);
++
++                        // set up arguments
++                        Knl.setArg(0, bufA);
++                        Knl.setArg(1, bufB);
++                        Knl.setArg(2, numBytes);
++
++			cl::Event E;
++			cQue.enqueueNDRangeKernel(Knl, cl::NullRange, cl::NDRange(mNumLoopbackChannels), 
++						  cl::NDRange(1), NULL, &E);
++			E.wait();
++
++                        for (unsigned int c = 0; c < mNumLoopbackChannels; c++)
++                        {
++	                        memcpy(mDanteTxChannels[c] + mDanteTxHeadSamples,
++					(void *)(((uint8_t*)get_cmem_tx()) + (numBytes * c)) , numBytes);
++                        }
++
++        	        mDanteTxHeadSamples += numSamples;
++	                mDanteRxHeadSamples += numSamples;
++                }
++                catch (cl::Error& err)
++                {
++                        std::cerr << "ERROR: " << err.what() << "(" << err.err() << ", "
++                                << ocl_decode_error(err.err()) << ")" << std::endl;
++                        exit(-1);
++                }
++	}
++#else // #ifdef OPENCL_OFFLOAD
++        void workUnwrappedDanteRxDanteTx(unsigned int numSamples)
++        {
++                assert(mDanteTxHeadSamples + numSamples <= mSamplesPerChannel);
++                assert(mDanteRxHeadSamples + numSamples <= mSamplesPerChannel);
++                //std::cerr << "Transferring " << numSamples << " from " << mReadHead << " to " << mWriteHead << std::
++                unsigned int numBytes = numSamples * sizeof(int32_t);
++                for (unsigned int c = 0; c < mNumLoopbackChannels; c++)
++                {
++                        // We copy Dante RX -> Dante RX
++                        memcpy(mDanteTxChannels[c] + mDanteTxHeadSamples, mDanteRxChannels[c] + mDanteRxHeadSamples, numBytes);               }
++                mDanteTxHeadSamples += numSamples;
++                mDanteRxHeadSamples += numSamples;
++        }
++#endif // #ifdef OPENCL_OFFLOAD else
++
++
+ 	void workUnwrappedDanteRx(unsigned int numSamples)
+ 	{
+ 		// Unwrap the Dante TX loop
+@@ -100,17 +194,28 @@
+ 		auto metadata = mBuffers.getHeader();
+ 		mSamplesPerPeriod = metadata->time.samples_per_period;
+ 		mSamplesPerChannel = metadata->audio.samples_per_channel;
+-		
+ 		mDanteTxChannels.resize(mBuffers.getHeader()->audio.num_tx_channels);
+ 		for (unsigned int i = 0; i < mDanteTxChannels.size(); i++)
+ 		{
+ 			mDanteTxChannels[i] = (int32_t *) mBuffers.getDanteTxChannel(i);
+ 		}
++
++#ifdef OPENCL_OFFLOAD
++		mDanteTxChannels_cmem = (uint8_t *) mBuffers.getDanteTxChannel_cmem();
++                std::cerr << "Reset::mDanteTxChannels_cmem: "
++                        << get_cmem_tx() << std::endl;
++#endif
+ 		mDanteRxChannels.resize(mBuffers.getHeader()->audio.num_rx_channels);
+ 		for (unsigned int i = 0; i < mDanteRxChannels.size(); i++)
+ 		{
+ 			mDanteRxChannels[i] = (const int32_t *) mBuffers.getDanteRxChannel(i);
+ 		}
++
++#ifdef OPENCL_OFFLOAD
++		mDanteRxChannels_cmem = (uint8_t *) mBuffers.getDanteRxChannel_cmem();
++                std::cerr << "Reset::mDanteRxChannels_cmem: "
++                        << get_cmem_rx() << std::endl;
++#endif
+ 		if (mDanteTxChannels.size() < mDanteRxChannels.size())
+ 		{
+ 			mNumLoopbackChannels = (unsigned int) mDanteTxChannels.size();
+@@ -124,6 +229,18 @@
+ 		mDanteTxHeadSamples = (unsigned int) ((metadata->time.period_count*mSamplesPerPeriod + mTxLatencySamples) % mSamplesPerChannel);
+ 	}
+ 
++#ifdef OPENCL_OFFLOAD
++	void *get_cmem_tx(void)
++	{
++		return mBuffers.getDanteTxChannel_cmem();
++	}
++
++	void *get_cmem_rx(void)
++	{
++		return mBuffers.getDanteRxChannel_cmem();
++	}
++#endif
++
+ private:
+ 	Dante::Buffers & mBuffers;
+ 	unsigned int mTxLatencySamples;
+@@ -134,7 +251,19 @@
+ 	unsigned int mDanteRxHeadSamples;
+ 	std::vector<int32_t *> mDanteTxChannels;
+ 	std::vector<const int32_t *> mDanteRxChannels;
+-	unsigned int mNumLoopbackChannels;
++        unsigned int mNumLoopbackChannels;
++
++#ifdef OPENCL_OFFLOAD
++        cl::Context                 cText;
++        std::vector<cl::Device>     devices;
++        cl::CommandQueue            cQue;
++	cl::Program::Binaries	    dspBinary;
++        cl::Program                 Prog;
++        cl::Kernel                  Knl;
++        cl::Kernel                  kTemp;
++        uint8_t *		    mDanteTxChannels_cmem;
++        uint8_t *		    mDanteRxChannels_cmem;
++#endif
+ };
+ 
+ #ifdef WIN32
+@@ -182,15 +311,26 @@
+ 			return err;
+ 		}
+ 		std::cerr << "POST: policy=" << policy << " priority=" << param.sched_priority << std::endl;
++#ifdef OPENCL_OFFLOAD
++		loopback.ocl_init();
++#endif
+ 	}
+ #endif
+ 	
+ 	signal(SIGINT, signal_handler);
+ 
++#ifdef OPENCL_OFFLOAD
++        // Move buffers.connect() out of while loop so OpenCL can have a dummy call to
++        // force DSP kernel be compiled and loaded to DSP
++	std::cerr << "Connecting..." << std::endl;
++	int result = buffers.connect("DanteEP", false);
++#endif
+ 	while (g_running)
+ 	{
++#ifndef OPENCL_OFFLOAD
+ 		std::cerr << "Connecting..." << std::endl;
+ 		int result = buffers.connect("DanteEP", false);
++#endif
+ 		if (result)
+ 		{
+ 			std::cerr << "Error connecting to shared memory: " << Dante::SharedMemory::getErrorMessage(result) << std::endl;
+@@ -207,6 +347,10 @@
+ 		auto _reset = [&loopback]() { loopback.reset(); };
+ 		runner.run(g_running, _work, _reset);
+ 
++#ifdef OPENCL_OFFLOAD
++                std::cerr << "Running.." << g_running << std::endl;
++#endif
++
+ 		std::cerr << "Disconnecting..." << std::endl;
+ 		buffers.disconnect();
+ 		std::cerr << "Disconnected" << std::endl;
+@@ -218,3 +362,4 @@
+ 
+ 	return 0;
+ }
++
+--- /dev/null
++++ /home/root/dep/example-dsp/audio/loopback/DspKernel.cl
+@@ -0,0 +1,21 @@
++#define BYTES_PER_CHANNEL 192000
++#define CMEM_ALIGNMENT 0
++
++kernel void null() { }
++
++kernel void ocl_cmemcpy(global char *cmem_tx, global char *cmem_rx, unsigned int len)
++{
++        int chanNum = get_global_id(0);
++#if 0
++
++	printf ("id = %d\n", get_global_id(0));
++	printf ("size = %d\n", get_global_size(0));
++
++	printf ("cmem_tx = %p\n", cmem_tx + (chanNum * len));
++        printf ("cmem_rx = %p\n", cmem_rx + (chanNum * len));
++
++	printf ("len = %d\n", len);
++#endif
++	memcpy (cmem_tx + (chanNum * len), 
++		cmem_rx + (chanNum * len), len);
++}
+--- /dev/null
++++ /home/root/dep/example-dsp/audio/loopback/Makefile.opcl
+@@ -0,0 +1,46 @@
++CXX ?= g++
++CLOCL ?= /usr/bin/clocl
++
++# executable # 
++BIN_NAME = DanteLoopback
++DSP_H_NAME = DspKernel.dsp_h
++
++SOURCES = DanteLoopback.cpp
++OBJECTS = $(SOURCES:%.cpp=%.o)
++#DEPS = $(OBJECTS:.o=.d)
++
++# flags #
++COMPILE_FLAGS = -Wno-error=nonnull -fPIC -Wall -Werror -Wno-error=unknown-pragmas -Wno-error=unused-function -Wno-error=strict-aliasing -fno-aggressive-loop-optimizations  -O2 -g -DNDEBUG -fPIC   -std=gnu++11
++INCLUDES = -I ../lib/include
++LIBS = ../lib/libdep_audio.a -lrt -lpthread -lOpenCL -locl_util -DOPENCL_OFFLOAD
++
++
++default_target: all
++
++.PHONY: clean
++clean:
++	$(RM) *.d *.o *.out $(BIN_NAME) $(DSP_H_NAME)
++
++# checks the executable and symlinks to the output
++.PHONY: all
++all: export CXXFLAGS := $(CXXFLAGS) $(COMPILE_FLAGS) -DOPENCL_OFFLOAD
++all: $(DSP_H_NAME) $(BIN_NAME) 
++
++%.out: %.cl
++	@echo Compiling $<
++	$(CLOCL) $(CLOCLFLAGS) $^
++
++%.dsp_h: %.cl
++	echo Compiling $<
++	$(CLOCL) -t $(CLOCLFLAGS) $^
++
++# Creation of the executable
++$(BIN_NAME): $(OBJECTS)
++	$(CXX) -o $@ $(OBJECTS) $(LIBS)
++
++# Source file rules
++# After the first compilation they will be joined with the rules from the
++# dependency files to provide header dependencies
++%.o: %.cpp
++	@echo "Compiling: $< -> $@"
++	$(CXX) $(CXXFLAGS) $(INCLUDES) -MP -MMD -c $< -o $@
