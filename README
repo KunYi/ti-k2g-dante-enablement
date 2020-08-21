@@ -19,7 +19,21 @@ There are 2 patch files provided:
    Processor SDK 06.01 release).
 
    RT-Linux kernel needs to rebuilt after the patch file is applied.
-   Please see build instruction in PLSDK Kernel User Guide:
+
+
+   a. Apply patch to PLSDK:
+      $ cd <plsdk_linux-rt-k2g-installed-dir>/board-support/linux-rt-[version]
+      $ patch < 0001-linux-KConfig-Enable-Dante-required-CGROUP-and-Names.patch 
+
+   b. Rebuilt rt-linux
+
+   Add the SDK's toolchain to the PATH environment variable and build the kernel image
+      $ export PATH=<sdk path>/linux-devkit/sysroots/x86_64-arago-linux/usr/bin:$PATH
+      $ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- tisdk_k2g-evm-rt_defconfig
+      $ make -j8 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- zImage
+   Copy arch/arm/boot/zImage to the /boot/zImage on K2G SD card
+
+   Please see detailed build instruction in PLSDK Kernel User Guide:
    http://software-dl.ti.com/processor-sdk-linux/esd/docs/latest/linux/Foundational_Components_Kernel_Users_Guide.html
 
 2) dante-loopback-dsp.patch
@@ -29,7 +43,18 @@ There are 2 patch files provided:
    The offload of audio samples allows further processing of audio
    samples in DSP core. The change is based on DEP 0.9 Beta release.
 
-   This patch file should be applied to DEP package in dep/example/audio.
-~                                                                                   
-~                                                                                   
+   a. Apply patch on DEP package installed on K2G
+      # copy dante-loopback-dsp.patch to /home/root/dep
+      # cd /home/root/dep/example
+      # patch < -p5 dante-loopback-dsp.patch
+
+   b. Build loopback example for ARM-only
+      # cd /home/root/dep/example/audio
+      # make clean
+      # make
+
+3. Build loopback example with DSP enablement
+      # cd /home/root/dep/example/audio
+      # make -f Makefile.opcl clean
+      # make -f Makefile.opcl
 
