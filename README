@@ -14,15 +14,20 @@ There are 2 patch files provided:
 
    Dante Enabled Platform (DEP) container requires RT-Linux and 
    CGROUP and Namespace support. Hence, this patch file reflects the
-   needed features in RT-Linux kernel.
+   needed features in RT-Linux kernel which are not included in the 
+   default setting. The change is based on kernel 4.19.59 (Linux 
+   Processor SDK 06.01 release).
+
    RT-Linux kernel needs to rebuilt after the patch file is applied.
+   Please see build instruction in PLSDK Kernel User Guide:
+   http://software-dl.ti.com/processor-sdk-linux/esd/docs/latest/linux/Foundational_Components_Kernel_Users_Guide.html
 
 2) dante-loopback-dsp.patch
 
    This patch file is only needed if doing DSP loopback. This patch
    enables the offload of audio samples to DSP, and back to ARM GPU.
    The offload of audio samples allows further processing of audio
-   samples in DSP core.
+   samples in DSP core. The change is based on DEP 0.9 Beta release.
 
    This patch file should be applied to DEP package in dep/example/audio.
 ~                                                                                   
