@@ -8,7 +8,11 @@ There are 2 types of loopback in the demo:
    2) DSP loopback: In DSP loopback, the audi samples will be offloaded to
       DSP and loopback in DSP back to ARM GPU, then out to network
 
-There are 2 patch files provided:
+There are 5 patch files provided: 
+- Patch 1 is needed by the DEP container.
+- Patches 2 through 4 are needed for kernel optimizations for interrupt pacing,
+  and additional overhead removal for the scheduling
+- Patch 5 is needed for the DSP loopback application.
 
 1) 0001-linux-KConfig-Enable-Dante-required-CGROUP-and-Names.patch
 
@@ -20,18 +24,49 @@ There are 2 patch files provided:
 
    RT-Linux kernel needs to rebuilt after the patch file is applied.
 
+2) 0002-k2g-defconfig-disable-RPS-and-XPS.patch
+   k2g: defconfig: disable RPS and XPS
+   
+3) 0003-soc-ti-knav_qmss-k2g-make-rx-tx-irq-no-thread-on-rt.patch
+    Networking RX/TX IRQs are simple and used to schedule NAPI, so making them
+    NOTHREAD allows to avoid additional scheduling
+
+    IRQ
+     |- threaded irq <--avoid
+        |-schedule NAPI (ksoftirqd)
+    
+4) 0004-drivers-net-ethernet-ti-netcp_core.c-tx-tmr.patch
+   This patch is needed for interrupt pacing enable for Transmit and Receive
 
    a. Apply patch to PLSDK:
       $ cd <plsdk_linux-rt-k2g-installed-dir>/board-support/linux-rt-[version]
       $ patch < 0001-linux-KConfig-Enable-Dante-required-CGROUP-and-Names.patch 
-
+      $ patch < 0002-k2g-defconfig-disable-RPS-and-XPS.patch 
+      $ patch < 0003-soc-ti-knav_qmss-k2g-make-rx-tx-irq-no-thread-on-rt.patch
+      $ patch < 0004-drivers-net-ethernet-ti-netcp_core.c-tx-tmr.patch 
+            
    b. Rebuilt rt-linux
 
    Add the SDK's toolchain to the PATH environment variable and build the kernel image
       $ export PATH=<sdk path>/linux-devkit/sysroots/x86_64-arago-linux/usr/bin:$PATH
+      $ cd <plsdk_linux-rt-k2g-installed-dir>/board-support/linux-rt-<version>
       $ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- tisdk_k2g-evm-rt_defconfig
       $ make -j8 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- zImage
+      $ make -j8 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules
+      $ cd <plsdk_linux-rt-k2g-installed-dir>
+      $ make cmem-mod
+      $ make uio_module_drv
+
    Copy arch/arm/boot/zImage to the /boot/zImage on K2G SD card
+   
+   Install the Kernel modules onto SD card at rootfs mount point
+      $make ARCH=arm INSTALL_MOD_PATH=<path_to_rootfs> modules_install
+   
+   Copy UIO driver module to the SD card in the rootfs
+      $cp <plsdk_linux-rt-k2g-installed-dir>/board-support/extra-drivers/uio-module-drv/uio-module-drv.ko <path_to_rootfs>/lib/modules/<kernel_version>/extra/uio-module-drv.ko
+
+   Copy CMEM driver module to the SD card in the rootfs
+      $cp <plsdk_linux-rt-k2g-installed-dir>/board-support/extra-drivers/cmem-mod/module/cmemk.ko <path_to_rootfs>/lib/modules/<kernel_version>/extra/cmemk.ko
 
    Please see detailed build instruction in PLSDK Kernel User Guide:
    http://software-dl.ti.com/processor-sdk-linux/esd/docs/latest/linux/Foundational_Components_Kernel_Users_Guide.html
