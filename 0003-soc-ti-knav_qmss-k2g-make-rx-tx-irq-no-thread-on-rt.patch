@@ -1,0 +1,33 @@
+From f30d98c0b90bce3bac00600117240cf9259f6c09 Mon Sep 17 00:00:00 2001
+From: Grygorii Strashko <grygorii.strashko@ti.com>
+Date: Tue, 10 Nov 2020 16:47:22 +0200
+Subject: [PATCH] soc: ti: knav_qmss: k2g: make rx/tx irq no thread on rt
+
+Networking RX/TX IRQs are simple and used to schedule NAPI, so making them
+NOTHREAD allows to avoid additional scheduling
+
+IRQ
+ |- threaded irq <--avoid
+    |-schedule NAPI (ksoftirqd)
+
+Signed-off-by: Grygorii Strashko <grygorii.strashko@ti.com>
+---
+ drivers/soc/ti/knav_qmss_queue.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/soc/ti/knav_qmss_queue.c b/drivers/soc/ti/knav_qmss_queue.c
+index ef36acc0e708..2c4d67a8baf3 100644
+--- a/drivers/soc/ti/knav_qmss_queue.c
++++ b/drivers/soc/ti/knav_qmss_queue.c
+@@ -122,7 +122,7 @@ static int knav_queue_setup_irq(struct knav_range_info *range,
+ 
+ 	if (range->flags & RANGE_HAS_IRQ) {
+ 		irq = range->irqs[queue].irq;
+-		ret = request_irq(irq, knav_queue_int_handler, 0,
++		ret = request_irq(irq, knav_queue_int_handler, IRQF_NO_THREAD,
+ 					inst->irq_name, inst);
+ 		if (ret)
+ 			return ret;
+-- 
+2.17.1
+

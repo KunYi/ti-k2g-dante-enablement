@@ -1,0 +1,178 @@
+From 80e83dccc4a4e3f1b6f599aa98739610e267ea86 Mon Sep 17 00:00:00 2001
+From: Grygorii Strashko <grygorii.strashko@ti.com>
+Date: Thu, 22 Oct 2020 15:46:09 +0300
+Subject: [PATCH] drivers/net/ethernet/ti/netcp_core.c tx tmr
+
+Signed-off-by: Grygorii Strashko <grygorii.strashko@ti.com>
+---
+ drivers/net/ethernet/ti/netcp.h       |  5 +++
+ drivers/net/ethernet/ti/netcp_core.c  | 47 +++++++++++++++++++++++++++
+ drivers/net/ethernet/ti/netcp_ethss.c | 27 +++++++++++++++
+ 3 files changed, 79 insertions(+)
+
+diff --git a/drivers/net/ethernet/ti/netcp.h b/drivers/net/ethernet/ti/netcp.h
+index fcb249c72274..3154808caf5d 100644
+--- a/drivers/net/ethernet/ti/netcp.h
++++ b/drivers/net/ethernet/ti/netcp.h
+@@ -130,6 +130,11 @@ struct netcp_intf {
+ 	/* DMA configuration data */
+ 	u32			msg_enable;
+ 	u32			rx_queue_depths[KNAV_DMA_FDQ_PER_CHAN];
++	struct hrtimer tx_hr_timer;
++	unsigned long tx_pace_timeout;
++	struct hrtimer rx_hr_timer;
++	unsigned long rx_pace_timeout;
++
+ };
+ 
+ #define	NETCP_PSDATA_LEN		KNAV_DMA_NUM_PS_WORDS
+diff --git a/drivers/net/ethernet/ti/netcp_core.c b/drivers/net/ethernet/ti/netcp_core.c
+index a1d335a3c5e4..9727a9717895 100644
+--- a/drivers/net/ethernet/ti/netcp_core.c
++++ b/drivers/net/ethernet/ti/netcp_core.c
+@@ -24,6 +24,8 @@
+ #include <linux/of_net.h>
+ #include <linux/of_address.h>
+ #include <linux/if_vlan.h>
++#include <linux/hrtimer.h>
++#include <linux/ktime.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/platform_device.h>
+ #include <linux/soc/ti/knav_qmss.h>
+@@ -958,19 +960,41 @@ static void netcp_rxpool_refill(struct netcp_intf *netcp)
+ 	} /* end for fdqs */
+ }
+ 
++#define TX_TIMEOUT   1000000L  //1msec expressed in nano seconds
++
++#define TIMER_CALLBACK
++
++enum hrtimer_restart rx_timer_callback(struct hrtimer *timer)
++{
++	struct netcp_intf *netcp = container_of(timer, struct netcp_intf, rx_hr_timer);
++
++	knav_queue_enable_notify(netcp->rx_queue);
++	return HRTIMER_NORESTART;
++}
++
+ /* NAPI poll */
+ static int netcp_rx_poll(struct napi_struct *napi, int budget)
+ {
+ 	struct netcp_intf *netcp = container_of(napi, struct netcp_intf,
+ 						rx_napi);
+ 	unsigned int packets;
++	ktime_t ktime;
+ 
+ 	packets = netcp_process_rx_packets(netcp, budget);
+ 
+ 	netcp_rxpool_refill(netcp);
+ 	if (packets < budget) {
+ 		napi_complete_done(&netcp->rx_napi, packets);
++#ifdef TIMER_CALLBACK
++		if (netcp->rx_pace_timeout) {
++			ktime = ktime_set(0, netcp->rx_pace_timeout);
++			hrtimer_start(&netcp->rx_hr_timer, ktime, HRTIMER_MODE_REL);
++		} else {
++			knav_queue_enable_notify(netcp->rx_queue);
++		}
++#else
+ 		knav_queue_enable_notify(netcp->rx_queue);
++#endif
+ 	}
+ 
+ 	return packets;
+@@ -1069,16 +1093,34 @@ static int netcp_process_tx_compl_packets(struct netcp_intf *netcp,
+ 	return pkts;
+ }
+ 
++enum hrtimer_restart tx_timer_callback(struct hrtimer *timer)
++{
++	struct netcp_intf *netcp = container_of(timer, struct netcp_intf, tx_hr_timer);
++
++	knav_queue_enable_notify(netcp->tx_compl_q);
++	return HRTIMER_NORESTART;
++}
++
+ static int netcp_tx_poll(struct napi_struct *napi, int budget)
+ {
+ 	int packets;
+ 	struct netcp_intf *netcp = container_of(napi, struct netcp_intf,
+ 						tx_napi);
++	ktime_t ktime;
+ 
+ 	packets = netcp_process_tx_compl_packets(netcp, budget);
+ 	if (packets < budget) {
+ 		napi_complete(&netcp->tx_napi);
++#ifdef TIMER_CALLBACK
++		if (netcp->tx_pace_timeout) {
++			ktime = ktime_set(0, netcp->tx_pace_timeout);
++			hrtimer_start(&netcp->tx_hr_timer, ktime, HRTIMER_MODE_REL);
++		}  else {
++			knav_queue_enable_notify(netcp->tx_compl_q);
++		}
++#else
+ 		knav_queue_enable_notify(netcp->tx_compl_q);
++#endif
+ 	}
+ 
+ 	return packets;
+@@ -2116,6 +2158,11 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
+ 	netif_napi_add(ndev, &netcp->rx_napi, netcp_rx_poll, NETCP_NAPI_WEIGHT);
+ 	netif_tx_napi_add(ndev, &netcp->tx_napi, netcp_tx_poll, NETCP_NAPI_WEIGHT);
+ 
++	hrtimer_init(&netcp->tx_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	netcp->tx_hr_timer.function = &tx_timer_callback;
++	hrtimer_init(&netcp->rx_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	netcp->rx_hr_timer.function = &rx_timer_callback;
++
+ 	/* Register the network device */
+ 	ndev->dev_id		= 0;
+ 	ndev->watchdog_timeo	= NETCP_TX_TIMEOUT;
+diff --git a/drivers/net/ethernet/ti/netcp_ethss.c b/drivers/net/ethernet/ti/netcp_ethss.c
+index c8290bd049f6..ae3737a951d3 100644
+--- a/drivers/net/ethernet/ti/netcp_ethss.c
++++ b/drivers/net/ethernet/ti/netcp_ethss.c
+@@ -1894,6 +1894,31 @@ static int keystone_get_ts_info(struct net_device *ndev,
+ }
+ #endif /* CONFIG_TI_CPTS */
+ 
++int keystone_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
++{
++	struct netcp_intf *netcp = netdev_priv(ndev);
++
++	if (coal->rx_coalesce_usecs && coal->rx_coalesce_usecs < 500)
++		coal->rx_coalesce_usecs = 500;
++
++	if (coal->tx_coalesce_usecs && coal->tx_coalesce_usecs < 500)
++		coal->tx_coalesce_usecs = 500;
++
++	netcp->tx_pace_timeout = coal->tx_coalesce_usecs * 1000;
++	netcp->rx_pace_timeout = coal->rx_coalesce_usecs * 1000;
++
++	return 0;
++}
++
++int keystone_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
++{
++	struct netcp_intf *netcp = netdev_priv(ndev);
++
++	coal->rx_coalesce_usecs = netcp->rx_pace_timeout/1000;
++	coal->tx_coalesce_usecs = netcp->tx_pace_timeout/1000;
++	return 0;
++}
++
+ static const struct ethtool_ops keystone_ethtool_ops = {
+ 	.get_drvinfo		= keystone_get_drvinfo,
+ 	.get_link		= ethtool_op_get_link,
+@@ -1905,6 +1930,8 @@ static const struct ethtool_ops keystone_ethtool_ops = {
+ 	.get_link_ksettings	= keystone_get_link_ksettings,
+ 	.set_link_ksettings	= keystone_set_link_ksettings,
+ 	.get_ts_info		= keystone_get_ts_info,
++	.get_coalesce		= keystone_get_coalesce,
++	.set_coalesce		= keystone_set_coalesce,
+ };
+ 
+ static void gbe_set_slave_mac(struct gbe_slave *slave,
+-- 
+2.17.1
+

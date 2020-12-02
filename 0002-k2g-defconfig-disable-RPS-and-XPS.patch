@@ -1,0 +1,35 @@
+From 0e7e8ff2a93c9d5ea3ec7902dab8510e57a9f3f1 Mon Sep 17 00:00:00 2001
+From: Grygorii Strashko <grygorii.strashko@ti.com>
+Date: Tue, 10 Nov 2020 16:42:06 +0200
+Subject: [PATCH] k2g: defconfig: disable RPS and XPS
+
+Signed-off-by: Grygorii Strashko <grygorii.strashko@ti.com>
+---
+ net/Kconfig | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/net/Kconfig b/net/Kconfig
+index a93c7c307728..e35fd26d1be6 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -241,7 +241,7 @@ source "net/ncsi/Kconfig"
+ config RPS
+ 	bool
+ 	depends on SMP && SYSFS
+-	default y
++	default n
+ 
+ config RFS_ACCEL
+ 	bool
+@@ -252,7 +252,7 @@ config RFS_ACCEL
+ config XPS
+ 	bool
+ 	depends on SMP
+-	default y
++	default n
+ 
+ config HWBM
+        bool
+-- 
+2.17.1
+
